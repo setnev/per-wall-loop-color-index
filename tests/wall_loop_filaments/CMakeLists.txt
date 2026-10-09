@@ -1,0 +1,10 @@
+# The parser/remapper can be tested without building slicer dependencies.
+cmake_minimum_required(VERSION 3.14)
+project(wall_loop_filament_tests LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+enable_testing()
+include(../../cmake/catch2.cmake)
+add_executable(wall_loop_filament_tests ../libslic3r/test_wall_loop_filaments.cpp)
+target_include_directories(wall_loop_filament_tests PRIVATE ../../src)
+target_link_libraries(wall_loop_filament_tests PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(wall_loop_filament_tests)

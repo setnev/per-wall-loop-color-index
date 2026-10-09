@@ -15,6 +15,7 @@ add_executable(${_TEST_NAME}_tests
 	test_skirt_brim.cpp
 	test_support_material.cpp
 	test_bed_temperature.cpp
+	test_wall_loop_gcode.cpp
 	test_trianglemesh.cpp
 	)
 find_package(JPEG REQUIRED)

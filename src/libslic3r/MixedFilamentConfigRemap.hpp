@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PrintConfig.hpp"
+#include "WallLoopFilaments.hpp"
 
 #include <cstddef>
 #include <string>
@@ -37,6 +38,18 @@ inline unsigned int remap_filament_config_id(int old_id,
     return static_cast<size_t>(mapped_id) > total_filaments ? 0 : mapped_id;
 }
 
+template<class Config>
+inline void remap_config_wall_loop_filaments(Config& config, const std::vector<unsigned int>& id_remap, size_t total_filaments)
+{
+    if (!config.has("wall_loop_filaments"))
+        return;
+    std::string text = static_cast<const ConfigOptionString*>(config.option("wall_loop_filaments"))->value;
+    if (remap_wall_loop_filaments(text, id_remap, total_filaments))
+        config.set_key_value("wall_loop_filaments", new ConfigOptionString(std::move(text)));
+    else
+        config.erase("wall_loop_filaments");
+}
+
 /// Remap object/volume config-level filament references after a deletion.
 ///
 /// `extruder` uses explicit zero for the default filament, matching the existing
@@ -46,6 +59,7 @@ inline void remap_model_config_filament_ids(ModelConfig &config,
                                              const std::vector<unsigned int> &id_remap,
                                              size_t total_filaments)
 {
+    remap_config_wall_loop_filaments(config, id_remap, total_filaments);
     if (config.has("extruder")) {
         const int old_id = config.extruder();
         const unsigned int mapped_id = remap_filament_config_id(old_id, id_remap, total_filaments);
@@ -77,6 +91,7 @@ inline void remap_dynamic_config_feature_filament_ids(DynamicPrintConfig &config
                                                        const std::vector<unsigned int> &id_remap,
                                                        size_t total_filaments)
 {
+    remap_config_wall_loop_filaments(config, id_remap, total_filaments);
     for (const std::string &key : mixed_filament_feature_keys()) {
         if (!config.has(key))
             continue;

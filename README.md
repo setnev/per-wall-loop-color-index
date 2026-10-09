@@ -1,4 +1,29 @@
 
+# Per Wall Loop Color Index for Snapmaker Orca
+
+This development version adds `wall_loop_filaments`, an outside-in filament
+assignment for individual wall loops. With four walls, `2,1,3` assigns filaments
+`2,1,3,3`. The setting supports global, object, and part overrides; an empty
+value uses the regular Walls filament.
+
+In Advanced mode, open **Multimaterial → Filament for Features → Per Wall Loop
+Color Index**. See the [usage notes and limits](doc/PerWallLoopColorIndex.md).
+
+The Windows development build and launcher smoke test passed. Automated checks
+passed 160 assertions across 14 test cases, including Classic and Arachne wall
+generators, filament remapping, prime-tower planning, and infill purge overrides.
+Physical printing has not been tested.
+
+Based on [Snapmaker/OrcaSlicer](https://github.com/Snapmaker/OrcaSlicer) at commit
+`c0e69878c643e8f6de128da4aa40f8da84327ae7`. The upstream source history,
+attributions, and [AGPL-3.0 license](LICENSE.txt) are retained. Build artifacts
+and local development tools are excluded from Git.
+
+## Upstream project documentation
+
+The download links below point to the official upstream releases. The feature
+described above is part of this development version.
+
 <h1> <p "font-size:200px;"> Snapmaker Orca</p> </h1>
 
 [![Build all](https://github.com/Snapmaker/OrcaSlicer/actions/workflows/build_all.yml/badge.svg?branch=main)](https://github.com/Snapmaker/OrcaSlicer/actions/workflows/build_all.yml)

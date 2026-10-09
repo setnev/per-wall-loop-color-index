@@ -1,5 +1,6 @@
 #include "Exception.hpp"
 #include "Print.hpp"
+#include "WallLoopFilaments.hpp"
 
 #include <cmath>
 
@@ -85,6 +86,12 @@ void PrintRegion::collect_object_printing_extruders(const PrintConfig &print_con
     };
     if (region_config.wall_loops.value > 0 || has_brim)
     	emplace_extruder(region_config.wall_filament);
+    if (region_config.wall_loops.value > 0 && region_config.wall_filament.value > 0 && region_config.wall_filament.value <= num_extruders) {
+        std::vector<unsigned int> ids;
+        if (parse_wall_loop_filaments(region_config.wall_loop_filaments.value, ids) && wall_loop_filaments_in_range(ids, num_extruders))
+            for (unsigned int id : ids)
+                emplace_extruder(int(id));
+    }
     if (region_config.sparse_infill_density.value > 0)
         emplace_extruder(region_config.sparse_infill_filament);
     if (region_config.top_shell_layers.value > 0 || region_config.bottom_shell_layers.value > 0)

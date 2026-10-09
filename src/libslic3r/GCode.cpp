@@ -16,6 +16,7 @@
 #include "GCode/WipeTower2.hpp"
 #include "ShortestPath.hpp"
 #include "MixedFilament.hpp"
+#include "WallLoopExtrusions.hpp"
 #include "Print.hpp"
 #include "Utils.hpp"
 #include "ClipperUtils.hpp"
@@ -6111,26 +6112,38 @@ LayerResult GCode::process_layer(const Print& print,
 
                         // This extrusion is part of certain Region, which tells us which extruder should be used for it:
                         int correct_extruder_id = configured_extruder_id(entity_type, *filtered_extrusions, region);
-                        if (!is_anything_overridden &&
-                            entity_type == ObjectByExtruder::Island::Region::PERIMETERS &&
-                            layer_tools.mixed_mgr != nullptr &&
-                            layer_tools.num_physical > 0 &&
+                        if (entity_type == ObjectByExtruder::Island::Region::PERIMETERS && layer_tools.num_physical > 0 &&
                             correct_extruder_id >= 0) {
-                            const unsigned int mixed_filament_id =
-                                grouped_manual_pattern_mixed_filament_id(entity_type, *filtered_extrusions, region);
-                            if (mixed_filament_id != 0) {
+                            std::vector<unsigned int> wall_loop_ids;
+                            const bool use_wall_loop_filaments = layer_tools.extruder_override == 0 && configured_filament_id > 0 &&
+                                                                 configured_filament_id <= layer_tools.num_physical &&
+                                                                 parse_wall_loop_filaments(region.config().wall_loop_filaments.value,
+                                                                                           wall_loop_ids) &&
+                                                                 !wall_loop_ids.empty() &&
+                                                                 wall_loop_filaments_in_range(wall_loop_ids, layer_tools.num_physical);
+                            const unsigned int mixed_filament_id = is_anything_overridden ?
+                                                                       0 :
+                                                                       grouped_manual_pattern_mixed_filament_id(entity_type,
+                                                                                                                *filtered_extrusions,
+                                                                                                                region);
+                            if (use_wall_loop_filaments || mixed_filament_id != 0) {
                                 std::vector<std::unique_ptr<ExtrusionEntityCollection>> split_by_extruder;
                                 size_t bucket_count = 0;
                                 const PrintObject* current_object_for_gradient =
                                     layer_to_print.original_object != nullptr ? layer_to_print.original_object : layer_to_print.object();
-                                if (split_extrusion_collection_for_multi_perimeter_pattern(*filtered_extrusions,
-                                                                                           *layer_tools.mixed_mgr,
-                                                                                           mixed_filament_id,
-                                                                                           layer_tools.num_physical,
-                                                                                           layer_tools.layer_index,
-                                                                                           split_by_extruder,
-                                                                                           bucket_count,
-                                                                                           current_object_for_gradient)) {
+                                const bool split =
+                                    use_wall_loop_filaments ?
+                                        split_extrusion_collection_for_wall_loop_filaments(*filtered_extrusions, wall_loop_ids,
+                                                                                           configured_filament_id, layer_tools.num_physical,
+                                                                                           split_by_extruder) :
+                                        split_extrusion_collection_for_multi_perimeter_pattern(*filtered_extrusions, *layer_tools.mixed_mgr,
+                                                                                               mixed_filament_id, layer_tools.num_physical,
+                                                                                               layer_tools.layer_index, split_by_extruder,
+                                                                                               bucket_count, current_object_for_gradient);
+                                if (use_wall_loop_filaments)
+                                    bucket_count = std::count_if(split_by_extruder.begin(), split_by_extruder.end(),
+                                                                 [](const auto& bucket) { return bucket && !bucket->entities.empty(); });
+                                if (split) {
                                     if (bucket_count >= 2) {
                                         for (size_t extruder_idx = 0; extruder_idx < split_by_extruder.size(); ++extruder_idx) {
                                             std::unique_ptr<ExtrusionEntityCollection>& split_collection = split_by_extruder[extruder_idx];

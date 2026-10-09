@@ -1171,6 +1171,7 @@ bool PrintObject::invalidate_state_by_config_options(
         } else if (
                opt_key == "outer_wall_line_width"
             || opt_key == "wall_filament"
+            || opt_key == "wall_loop_filaments"
             || opt_key == "fuzzy_skin"
             || opt_key == "fuzzy_skin_thickness"
             || opt_key == "fuzzy_skin_point_distance"
@@ -1269,6 +1270,7 @@ bool PrintObject::invalidate_state_by_config_options(
     // Without this, stale local-z data referencing removed extruders can cause crashes.
     for (const std::string &opt_key : opt_keys) {
         if (opt_key == "extruder" || opt_key == "wall_filament" ||
+            opt_key == "wall_loop_filaments" ||
             opt_key == "sparse_infill_filament" || opt_key == "solid_infill_filament") {
             this->clear_local_z_plan();
             break;

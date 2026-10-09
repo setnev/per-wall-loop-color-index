@@ -1,4 +1,5 @@
 #include "PrintConfig.hpp"
+#include "WallLoopFilaments.hpp"
 #include "ProjectSchemaVersion.hpp"
 #include "ClipperUtils.hpp"
 #include "Config.hpp"
@@ -4294,6 +4295,16 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionInt(1));
 
+    def           = this->add("wall_loop_filaments", coString);
+    def->label    = L("Per Wall Loop Color Index");
+    def->category = L("Extruders");
+    def->tooltip  = L("Comma-separated filament numbers for wall loops, from the outside in. For example, 2,1,3,3 prints "
+                       "four walls using filaments 2, 1, 3 and 3. Deeper loops use the last entry. Leave empty to use the Walls filament. "
+                       "Gap fill and thin walls use the Walls filament. Painted regions and mixed wall filaments ignore this setting. "
+                       "Additional filament changes can increase purge waste.");
+    def->mode     = comAdvanced;
+    def->set_default_value(new ConfigOptionString(""));
+
     def = this->add("inner_wall_line_width", coFloatOrPercent);
     def->label = L("Inner wall");
     def->category = L("Quality");
@@ -8237,6 +8248,13 @@ std::map<std::string, std::string> validate(const FullPrintConfig &cfg, bool und
     if (cfg.wall_loops.value < 0) {
         error_message.emplace("wall_loops", L("invalid value ") + std::to_string(cfg.wall_loops.value));
     }
+
+    // --wall-loop-filaments
+    std::vector<unsigned int> wall_loop_ids;
+    if (cfg.wall_filament.value > 0 && size_t(cfg.wall_filament.value) <= cfg.filament_diameter.size() &&
+        (!parse_wall_loop_filaments(cfg.wall_loop_filaments.value, wall_loop_ids) ||
+         !wall_loop_filaments_in_range(wall_loop_ids, cfg.filament_diameter.size())))
+        error_message.emplace("wall_loop_filaments", L("Use comma-separated numbers of existing physical filaments, or leave empty."));
 
     // --solid-layers
     if (cfg.top_shell_layers < 0) {

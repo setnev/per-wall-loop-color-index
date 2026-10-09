@@ -23,6 +23,7 @@
 #include "libslic3r/Tesselate.hpp"
 #include "libslic3r/GCode/ThumbnailData.hpp"
 #include "libslic3r/Utils.hpp"
+#include "libslic3r/WallLoopFilaments.hpp"
 #include "libslic3r/GCode/WipeTowerHelper.hpp"
 
 #include "I18N.hpp"
@@ -1832,6 +1833,45 @@ int PartPlate::picking_id_component(int idx) const
     return this->m_plate_index * GRABBER_COUNT + idx;
 }
 
+// Include wall-loop tools in the plate's pre-slice filament and tower estimates.
+static void collect_wall_loop_extruders(std::vector<int>&         ids,
+                                        const DynamicPrintConfig& global,
+                                        const ModelObject&        object,
+                                        size_t                    num_physical)
+{
+    const auto apply = [](PrintRegionConfig& cfg, const DynamicPrintConfig& overrides) {
+        if (const auto* extruder = overrides.option<ConfigOptionInt>("extruder"); extruder && extruder->value > 0)
+            cfg.wall_filament.value = extruder->value;
+        const int inherited_wall = cfg.wall_filament.value;
+        cfg.apply(overrides, true);
+        if (cfg.wall_filament.value <= 0)
+            cfg.wall_filament.value = inherited_wall;
+    };
+    const auto collect = [&](const PrintRegionConfig& cfg) {
+        std::vector<unsigned int> loops;
+        if (cfg.wall_loops.value > 0 && cfg.wall_filament.value > 0 && size_t(cfg.wall_filament.value) <= num_physical &&
+            parse_wall_loop_filaments(cfg.wall_loop_filaments.value, loops) && wall_loop_filaments_in_range(loops, num_physical))
+            ids.insert(ids.end(), loops.begin(), loops.end());
+    };
+    PrintRegionConfig parent;
+    apply(parent, global);
+    apply(parent, object.config.get());
+    for (const ModelVolume* volume : object.volumes) {
+        if (!volume->is_model_part() && !volume->is_modifier())
+            continue;
+        PrintRegionConfig cfg = parent;
+        apply(cfg, volume->config.get());
+        if (!volume->material_id().empty())
+            apply(cfg, volume->material()->config.get());
+        collect(cfg);
+        if (volume->is_model_part())
+            for (const auto& range : object.layer_config_ranges) {
+                PrintRegionConfig range_cfg = cfg;
+                apply(range_cfg, range.second.get());
+                collect(range_cfg);
+            }
+    }
+}
 
 static void expand_plate_extruders(std::vector<int>& ids)
 {
@@ -1871,7 +1911,8 @@ std::vector<int> PartPlate::get_extruders(bool conside_custom_gcode) const
 			continue;
 
 		ModelObject* mo = m_model->objects[obj_idx];
-		for (ModelVolume* mv : mo->volumes) {
+        collect_wall_loop_extruders(plate_extruders, glb_config, *mo, wxGetApp().preset_bundle->filament_presets.size());
+        for (ModelVolume* mv : mo->volumes) {
 			std::vector<int> volume_extruders = mv->get_extruders();
 			plate_extruders.insert(plate_extruders.end(), volume_extruders.begin(), volume_extruders.end());
 		}
@@ -2014,6 +2055,8 @@ std::vector<int> PartPlate::get_extruders_under_cli(bool conside_custom_gcode, D
             if (!instance->printable)
                 continue;
 
+            collect_wall_loop_extruders(plate_extruders, full_config, *object,
+                                        full_config.option<ConfigOptionFloats>("filament_diameter")->size());
             for (ModelVolume* mv : object->volumes) {
                 std::vector<int> volume_extruders = mv->get_extruders();
                 plate_extruders.insert(plate_extruders.end(), volume_extruders.begin(), volume_extruders.end());
@@ -2122,7 +2165,8 @@ std::vector<int> PartPlate::get_extruders_without_support(bool conside_custom_gc
 			continue;
 
 		ModelObject* mo = m_model->objects[obj_idx];
-		for (ModelVolume* mv : mo->volumes) {
+        collect_wall_loop_extruders(plate_extruders, glb_config, *mo, wxGetApp().preset_bundle->filament_presets.size());
+        for (ModelVolume* mv : mo->volumes) {
 			std::vector<int> volume_extruders = mv->get_extruders();
 			plate_extruders.insert(plate_extruders.end(), volume_extruders.begin(), volume_extruders.end());
 		}

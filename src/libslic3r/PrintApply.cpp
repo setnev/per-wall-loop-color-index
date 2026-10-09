@@ -1,10 +1,12 @@
 #include "MixedFilament.hpp"
 #include "Model.hpp"
 #include "Print.hpp"
+#include "WallLoopFilaments.hpp"
 
 #include <boost/log/trivial.hpp>
 #include <algorithm>
 #include <cfloat>
+#include <limits>
 
 namespace Slic3r {
 
@@ -829,6 +831,7 @@ bool verify_update_print_object_regions(
             const PrintObjectRegions::VolumeRegion &parent_region   = layer_range.volume_regions[region.parent];
             PrintRegionConfig                       cfg             = parent_region.region->config();
             cfg.wall_filament.value    = region.extruder_id;
+            cfg.wall_loop_filaments.value.clear();
             cfg.solid_infill_filament.value = region.extruder_id;
             cfg.sparse_infill_filament.value       = region.extruder_id;
             if (cfg != region.region->config()) {
@@ -1074,6 +1077,7 @@ static PrintObjectRegions* generate_print_object_regions(
                     mm_paint_applies_to_parent_region(layer_range, parent_region_id)) {
                     PrintRegionConfig cfg = parent_region.region->config();
                     cfg.wall_filament.value    = painted_extruder_id;
+                    cfg.wall_loop_filaments.value.clear();
                     cfg.solid_infill_filament.value = painted_extruder_id;
                     cfg.sparse_infill_filament.value       = painted_extruder_id;
                     // Keep PrintRegion config-interned. If a painted target resolves to the same
@@ -1228,6 +1232,66 @@ static bool same_layer_pointillism_enabled(const MixedFilamentManager &mixed_mgr
     return false;
 }
 
+// Prime-tower normalization runs before the new PrintRegions exist. Include
+// incoming assignments so a multi-filament wall list is not mistaken for a
+// single-filament model during first apply or an in-session settings change.
+static std::vector<unsigned int> incoming_wall_loop_extruders(const Model& model, const DynamicPrintConfig& full_config)
+{
+    const auto has_list = [](const DynamicPrintConfig& cfg) {
+        const auto* option = cfg.option<ConfigOptionString>("wall_loop_filaments");
+        return option != nullptr && !option->value.empty();
+    };
+    bool configured = has_list(full_config);
+    if (!configured)
+        for (const ModelObject* object : model.objects) {
+            configured = has_list(object->config.get());
+            for (const ModelVolume* volume : object->volumes) {
+                configured |= has_list(volume->config.get());
+                if (!volume->material_id().empty())
+                    configured |= has_list(volume->material()->config.get());
+            }
+            for (const auto& range : object->layer_config_ranges)
+                configured |= has_list(range.second.get());
+            if (configured)
+                break;
+        }
+    if (!configured)
+        return {};
+
+    PrintConfig print_config;
+    print_config.apply(full_config, true);
+    PrintRegionConfig defaults;
+    defaults.apply(full_config, true);
+    const size_t              num_physical = print_config.filament_diameter.size();
+    std::vector<unsigned int> extruders;
+    const auto                collect = [&](const PrintRegionConfig& cfg) {
+        std::vector<unsigned int> ids;
+        if (cfg.wall_loops.value > 0 && cfg.wall_filament.value > 0 && size_t(cfg.wall_filament.value) <= num_physical &&
+            parse_wall_loop_filaments(cfg.wall_loop_filaments.value, ids) && !ids.empty() &&
+            wall_loop_filaments_in_range(ids, num_physical))
+            PrintRegion::collect_object_printing_extruders(print_config, cfg, false, extruders);
+    };
+    for (const ModelObject* object : model.objects) {
+        const auto collect_with_modifiers = [&](const PrintRegionConfig& parent) {
+            collect(parent);
+            for (const ModelVolume* modifier : object->volumes)
+                if (modifier->is_modifier())
+                    collect(region_config_from_model_volume(parent, nullptr, *modifier, std::numeric_limits<int>::max()));
+        };
+        for (const ModelVolume* volume : object->volumes) {
+            if (!volume->is_model_part())
+                continue;
+            // Keep virtual wall IDs intact so mixed-filament regions ignore the list.
+            collect_with_modifiers(region_config_from_model_volume(defaults, nullptr, *volume, std::numeric_limits<int>::max()));
+            for (const auto& range : object->layer_config_ranges)
+                collect_with_modifiers(
+                    region_config_from_model_volume(defaults, &range.second.get(), *volume, std::numeric_limits<int>::max()));
+        }
+    }
+    sort_remove_duplicates(extruders);
+    return extruders;
+}
+
 Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_config)
 {
 #ifdef _DEBUG
@@ -1290,11 +1354,14 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
     m_default_object_config.option("mixed_filament_region_collapse", true);
     m_default_object_config.option("mixed_filament_definitions", true);
     // BBS
-    int used_filaments = this->extruders(true).size();
-
     //new_full_config.normalize_fdm(used_filaments);
     new_full_config.normalize_fdm_1();
-    t_config_option_keys changed_keys = new_full_config.normalize_fdm_2(objects().size(), used_filaments);
+    const auto incoming_wall_tools = incoming_wall_loop_extruders(model, new_full_config);
+    auto       used_tools          = this->extruders(true);
+    append(used_tools, incoming_wall_tools);
+    sort_remove_duplicates(used_tools);
+    int                  used_filaments = int(used_tools.size());
+    t_config_option_keys changed_keys   = new_full_config.normalize_fdm_2(objects().size(), used_filaments);
     if (changed_keys.size() > 0) {
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", got changed_keys, size=%1%")%changed_keys.size();
         for (int i = 0; i < changed_keys.size(); i++)
@@ -1786,7 +1853,10 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
     }
 
     //BBS: check the config again
-    int new_used_filaments = this->extruders(true).size();
+    auto new_used_tools = this->extruders(true);
+    append(new_used_tools, incoming_wall_tools);
+    sort_remove_duplicates(new_used_tools);
+    int                  new_used_filaments = int(new_used_tools.size());
     t_config_option_keys new_changed_keys = new_full_config.normalize_fdm_2(objects().size(), new_used_filaments);
     if (new_changed_keys.size() > 0) {
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", got new_changed_keys, size=%1%")%new_changed_keys.size();

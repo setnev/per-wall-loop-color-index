@@ -18,6 +18,7 @@
 #include "GCode/WipeTowerHelper.hpp"
 #include "Utils.hpp"
 #include "PrintConfig.hpp"
+#include "WallLoopFilaments.hpp"
 #include "FilamentHotBedNozzleRules.hpp"
 #include "Model.hpp"
 #include "format.hpp"
@@ -1601,6 +1602,18 @@ StringObjectException Print::validate(StringObjectException *warning, Polygons* 
 
     if (m_objects.empty())
         return {std::string()};
+
+    for (const PrintObject* object : m_objects)
+        for (const PrintRegion& region : object->all_regions()) {
+            const auto& cfg = region.config();
+            if (cfg.wall_filament.value <= 0 || size_t(cfg.wall_filament.value) > m_config.filament_diameter.size())
+                continue; // Mixed wall filaments ignore the loop list.
+            std::vector<unsigned int> ids;
+            if (!parse_wall_loop_filaments(cfg.wall_loop_filaments.value, ids) ||
+                !wall_loop_filaments_in_range(ids, m_config.filament_diameter.size()))
+                return {L("Per Wall Loop Color Index requires comma-separated numbers of existing physical filaments, or an empty value."),
+                        object, "wall_loop_filaments"};
+        }
 
     if (extruders.empty())
         return { L("No extrusions under current settings.") };

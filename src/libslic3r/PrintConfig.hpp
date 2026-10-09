@@ -1099,6 +1099,7 @@ PRINT_CONFIG_CLASS_DEFINE(
     // Detect bridging perimeters
     ((ConfigOptionBool, detect_overhang_wall))
     ((ConfigOptionInt, wall_filament))
+    ((ConfigOptionString, wall_loop_filaments))
     ((ConfigOptionFloatOrPercent, inner_wall_line_width))
     ((ConfigOptionFloats, inner_wall_speed))
     // Total number of perimeters.

@@ -432,9 +432,52 @@ static bool model_object_is_on_plate(PartPlate* plate, size_t obj_idx, const Mod
     return false;
 }
 
-static void collect_filament_slots_from_config(
-    const DynamicPrintConfig& config,
-    int num_filaments, std::set<int>& used_slots_0_based)
+static void remap_print_preset_wall_loop_filaments(PresetBundle& bundle, const std::vector<unsigned int>& id_remap)
+{
+    auto&       cfg    = bundle.prints.get_edited_preset().config;
+    const auto* option = cfg.option<ConfigOptionString>("wall_loop_filaments");
+    if (!option)
+        return;
+    std::string               text = option->value;
+    std::vector<unsigned int> previous_ids;
+    bool                      changed = false;
+    // Keep the regular-wall fallback in sync with an active list. Otherwise a
+    // removed physical slot can alias a newly renumbered mixed-filament row.
+    if (parse_wall_loop_filaments(text, previous_ids) && !previous_ids.empty()) {
+        if (const auto* wall = cfg.option<ConfigOptionInt>("wall_filament")) {
+            const unsigned int mapped   = remap_filament_config_id(wall->value, id_remap,
+                                                                   bundle.mixed_filaments.total_filaments(bundle.filament_presets.size()));
+            const int          fallback = mapped == 0 ? 1 : int(mapped);
+            if (fallback != wall->value) {
+                cfg.set_key_value("wall_filament", new ConfigOptionInt(fallback));
+                changed = true;
+            }
+        }
+    }
+    if (!remap_wall_loop_filaments(text, id_remap, bundle.filament_presets.size()))
+        text.clear();
+    if (text != option->value) {
+        cfg.set_key_value("wall_loop_filaments", new ConfigOptionString(std::move(text)));
+        changed = true;
+    }
+    if (!changed)
+        return;
+    if (auto* tab = wxGetApp().get_tab(Preset::TYPE_PRINT)) {
+        tab->update_dirty();
+        tab->reload_config();
+    }
+}
+
+static void refresh_wall_loop_model_settings()
+{
+    if (wxGetApp().plater()->inside_snapshot_capture())
+        return;
+    for (bool is_part : {false, true})
+        if (auto* tab = dynamic_cast<TabPrintModel*>(wxGetApp().get_model_tab(is_part)))
+            tab->update_model_config();
+}
+
+static void collect_filament_slots_from_config(const DynamicPrintConfig& config, int num_filaments, std::set<int>& used_slots_0_based)
 {
     // Support/feature filaments
     static const std::vector<const char*> feature_keys = {
@@ -452,6 +495,13 @@ static void collect_filament_slots_from_config(
             used_slots_0_based.insert(option->value - 1);
     }
 
+    if (const auto* option = config.option<ConfigOptionString>("wall_loop_filaments")) {
+        std::vector<unsigned int> ids;
+        if (parse_wall_loop_filaments(option->value, ids) && wall_loop_filaments_in_range(ids, num_filaments))
+            for (unsigned int id : ids)
+                used_slots_0_based.insert(int(id - 1));
+    }
+
     // Primary filament (extruder)
     const ConfigOptionInt* extruder_option = config.option<ConfigOptionInt>("extruder");
     if (extruder_option != nullptr && extruder_option->value >= 1 && extruder_option->value <= num_filaments)
@@ -462,6 +512,13 @@ static void collect_filament_slots_from_model_config(
     const ModelConfigObject& config,
     int num_filaments, std::set<int>& used_slots_0_based)
 {
+    if (config.has("wall_loop_filaments")) {
+        std::vector<unsigned int> ids;
+        if (parse_wall_loop_filaments(config.get().opt_string("wall_loop_filaments"), ids) &&
+            wall_loop_filaments_in_range(ids, num_filaments))
+            for (unsigned int id : ids)
+                used_slots_0_based.insert(int(id - 1));
+    }
     // Primary filament (extruder)
     if (config.has("extruder"))
     {
@@ -10724,7 +10781,7 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
         "extruder_colour", "filament_colour", "material_colour", "printable_height", "printer_model", "printer_technology",
         // These values are necessary to construct SlicingParameters by the Canvas3D variable layer height editor.
         "layer_height", "initial_layer_print_height", "min_layer_height", "max_layer_height",
-        "brim_width", "wall_loops", "wall_filament", "sparse_infill_density", "sparse_infill_filament", "solid_infill_filament", "top_shell_layers",
+        "brim_width", "wall_loops", "wall_filament", "wall_loop_filaments", "sparse_infill_density", "sparse_infill_filament", "solid_infill_filament", "top_shell_layers",
         "enable_support", "support_filament", "support_interface_filament",
         "support_top_z_distance", "support_bottom_z_distance", "raft_layers",
         "wipe_tower_rotation_angle", "wipe_tower_cone_angle", "wipe_tower_extra_spacing", "wipe_tower_extra_flow", "local_z_wipe_tower_purge_lines", "wipe_tower_max_purge_speed",
@@ -22128,7 +22185,25 @@ void Plater::on_filaments_delete(size_t num_filaments, size_t filament_id, int r
     // be expressed by the naive decrement path below.
     if (should_remap_states) {
         remap_dynamic_config_feature_filament_ids(*p->config, id_remap, num_filaments);
+        if (preset_bundle)
+            remap_print_preset_wall_loop_filaments(*preset_bundle, id_remap);
     } else {
+        // Legacy deletion has no explicit remap table. Remap the wall list at
+        // every override level without changing its outside-in positions.
+        std::vector<unsigned int> loop_remap(num_filaments + 2, 0);
+        for (size_t old_id = 1; old_id < loop_remap.size(); ++old_id)
+            if (old_id != filament_id + 1)
+                loop_remap[old_id] = unsigned(old_id > filament_id + 1 ? old_id - 1 : old_id);
+        remap_config_wall_loop_filaments(*p->config, loop_remap, num_filaments);
+        if (preset_bundle)
+            remap_print_preset_wall_loop_filaments(*preset_bundle, loop_remap);
+        for (ModelObject* object : wxGetApp().model().objects) {
+            remap_config_wall_loop_filaments(object->config, loop_remap, num_filaments);
+            for (ModelVolume* volume : object->volumes)
+                remap_config_wall_loop_filaments(volume->config, loop_remap, num_filaments);
+            for (auto& range : object->layer_config_ranges)
+                remap_config_wall_loop_filaments(range.second, loop_remap, num_filaments);
+        }
         for (const std::string &key : mixed_filament_feature_keys()) {
             if (!p->config->has(key))
                 continue;
@@ -22164,6 +22239,8 @@ void Plater::on_filaments_delete(size_t num_filaments, size_t filament_id, int r
     }
 
     // update customize gcode
+    if (p->m_batch_physical_deletion == 0)
+        refresh_wall_loop_model_settings();
     for (auto item = p->model.plates_custom_gcodes.begin(); item != p->model.plates_custom_gcodes.end(); ++item) {
         auto iter = std::remove_if(item->second.gcodes.begin(), item->second.gcodes.end(), [filament_id](const CustomGCode::Item& gcode_item) {
             return (gcode_item.type == CustomGCode::Type::ToolChange && gcode_item.extruder == filament_id + 1);
@@ -22284,6 +22361,13 @@ void Plater::on_filaments_change(size_t num_filaments)
 
     size_t obj_idx = 0;
     for (ModelObject* mo : wxGetApp().model().objects) {
+        if (should_remap_states) {
+            remap_config_wall_loop_filaments(mo->config, id_remap, num_filaments);
+            for (ModelVolume* volume : mo->volumes)
+                remap_config_wall_loop_filaments(volume->config, id_remap, num_filaments);
+            for (auto& range : mo->layer_config_ranges)
+                remap_config_wall_loop_filaments(range.second, id_remap, num_filaments);
+        }
         size_t vol_idx = 0;
         for (ModelVolume* mv : mo->volumes) {
             std::string used_before;
@@ -22313,8 +22397,14 @@ void Plater::on_filaments_change(size_t num_filaments)
 
     // Keep UI refresh after model remap. Some UI update paths may trigger
     // scene/model sync that assumes already-remapped MMU state.
+    if (should_remap_states) {
+        remap_config_wall_loop_filaments(*p->config, id_remap, num_filaments);
+        if (preset_bundle)
+            remap_print_preset_wall_loop_filaments(*preset_bundle, id_remap);
+    }
     sidebar().on_filaments_change(num_filaments);
     sidebar().obj_list()->update_objects_list_filament_column(num_filaments);
+    refresh_wall_loop_model_settings();
 
     Slic3r::GUI::PartPlateList &plate_list = get_partplate_list();
     for (int i = 0; i < plate_list.get_plate_count(); ++i) {
@@ -23171,7 +23261,7 @@ void Plater::on_config_change(const DynamicPrintConfig &config)
         }
         // Orca: update when *_filament changed
         else if (opt_key == "support_interface_filament" || opt_key == "support_filament" || opt_key == "wall_filament" ||
-                 opt_key == "sparse_infill_filament" || opt_key == "solid_infill_filament") {
+                 opt_key == "wall_loop_filaments" || opt_key == "sparse_infill_filament" || opt_key == "solid_infill_filament") {
             update_scheduled = true;
         }
     }

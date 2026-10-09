@@ -4,6 +4,7 @@
 #include "Layer.hpp"
 #include "ClipperUtils.hpp"
 #include "ParameterUtils.hpp"
+#include "WallLoopFilaments.hpp"
 
 // #define SLIC3R_DEBUG
 
@@ -769,22 +770,46 @@ void ToolOrdering::collect_extruders(const PrintObject &object, const std::vecto
                 if (something_nonoverriddable){
                     const unsigned int configured_wall = (extruder_override == 0) ? region.config().wall_filament.value : extruder_override;
                     unsigned int       wall_ext        = resolve_mixed(configured_wall, layerCount, float(layer->print_z), float(layer->height), &object);
-                    const unsigned int grouped_id =
-                        grouped_manual_pattern_mixed_filament_id_for_layer(layer_tools, configured_wall);
-                    if (grouped_id != 0) {
-                        const std::vector<unsigned int> ordered =
-                            m_mixed_mgr->ordered_perimeter_extruders(grouped_id,
-                                                                     m_num_physical,
-                                                                     layerCount,
-                                                                     float(layer->print_z),
-                                                                     float(layer->height));
+                    std::vector<unsigned int> wall_loop_ids;
+                    const bool                use_wall_loop_filaments = extruder_override == 0 && configured_wall > 0 &&
+                                                         configured_wall <= m_num_physical &&
+                                                         parse_wall_loop_filaments(region.config().wall_loop_filaments.value,
+                                                                                   wall_loop_ids) &&
+                                                         !wall_loop_ids.empty() &&
+                                                         wall_loop_filaments_in_range(wall_loop_ids, m_num_physical);
+                    const unsigned int grouped_id = grouped_manual_pattern_mixed_filament_id_for_layer(layer_tools, configured_wall);
+                    if (use_wall_loop_filaments) {
+                        const auto flattened        = layerm->perimeters.flatten(false);
+                        const bool has_indexed_wall = std::any_of(flattened.entities.begin(), flattened.entities.end(),
+                                                                  [](const ExtrusionEntity* entity) {
+                                                                      return entity->inset_idx >= 0 && is_perimeter(entity->role());
+                                                                  });
+                        if (has_indexed_wall)
+                            for (unsigned int id : wall_loop_ids)
+                                layer_tools.extruders.emplace_back(id);
+                        // Do not schedule a purge/tool change for an unused regular
+                        // wall filament. Unindexed paths and brim still need it.
+                        const bool needs_regular_wall = flattened.entities.empty() || (layerCount == 0 && object.print()->has_brim()) ||
+                                                        std::any_of(flattened.entities.begin(), flattened.entities.end(),
+                                                                    [](const ExtrusionEntity* entity) {
+                                                                        return entity->inset_idx < 0 || !is_perimeter(entity->role());
+                                                                    });
+                        if (needs_regular_wall)
+                            layer_tools.extruders.emplace_back(wall_ext);
+                        if (layerCount == 0)
+                            firstLayerExtruders.emplace_back(wall_ext);
+                    } else if (grouped_id != 0) {
+                        const std::vector<unsigned int> ordered = m_mixed_mgr->ordered_perimeter_extruders(grouped_id, m_num_physical,
+                                                                                                           layerCount,
+                                                                                                           float(layer->print_z),
+                                                                                                           float(layer->height));
                         if (!ordered.empty()) {
                             if (ordered.size() >= 2)
                                 layer_tools.preserve_extruder_order = true;
                             for (unsigned int extruder_id : ordered) {
                                 layer_tools.extruders.emplace_back(extruder_id);
-                                if (layerCount == 0 &&
-                                    std::find(firstLayerExtruders.begin(), firstLayerExtruders.end(), int(extruder_id)) == firstLayerExtruders.end())
+                                if (layerCount == 0 && std::find(firstLayerExtruders.begin(), firstLayerExtruders.end(),
+                                                                 int(extruder_id)) == firstLayerExtruders.end())
                                     firstLayerExtruders.emplace_back(int(extruder_id));
                             }
                         } else {
@@ -1492,10 +1517,29 @@ int WipingExtrusions::last_nonsoluble_extruder_on_layer(const PrintConfig& print
 }
 
 // Decides whether this entity could be overridden
-bool WipingExtrusions::is_overriddable(const ExtrusionEntityCollection& eec, const PrintConfig& print_config, const PrintObject& object, const PrintRegion& region) const
+bool WipingExtrusions::is_overriddable(const ExtrusionEntityCollection& eec,
+                                       const PrintConfig&               print_config,
+                                       const PrintObject&               object,
+                                       const PrintRegion&               region) const
 {
     if (m_layer_tools->has_local_z_subdivision)
         return false;
+
+    // Explicit wall assignments must not become purge paths in another material.
+    std::vector<unsigned int> wall_loop_ids;
+    if (!region.config().wall_loop_filaments.value.empty() && region.config().wall_filament.value > 0 &&
+        size_t(region.config().wall_filament.value) <= m_layer_tools->num_physical &&
+        parse_wall_loop_filaments(region.config().wall_loop_filaments.value, wall_loop_ids) && !wall_loop_ids.empty() &&
+        wall_loop_filaments_in_range(wall_loop_ids, m_layer_tools->num_physical)) {
+        if (is_perimeter(eec.role()) || eec.role() == erGapFill)
+            return false;
+        if (eec.role() == erMixed) {
+            const auto flattened = eec.flatten(false);
+            if (std::any_of(flattened.entities.begin(), flattened.entities.end(),
+                            [](const ExtrusionEntity* entity) { return is_perimeter(entity->role()) || entity->role() == erGapFill; }))
+                return false;
+        }
+    }
 
     if (print_config.filament_soluble.get_at(m_layer_tools->extruder(eec, region)))
         return false;
