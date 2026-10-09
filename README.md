@@ -12,7 +12,14 @@ Color Index**. See the [usage notes and limits](doc/PerWallLoopColorIndex.md).
 The Windows development build and launcher smoke test passed. Automated checks
 passed 160 assertions across 14 test cases, including Classic and Arachne wall
 generators, filament remapping, prime-tower planning, and infill purge overrides.
-Physical printing has not been tested.
+The project owner has also tested the feature in Snapmaker Orca and confirmed
+independent color and material selection for each wall. No printer model,
+material combination, or physical print results were recorded.
+
+Download the [Windows portable community preview](https://github.com/setnev/per-wall-loop-color-index/releases/tag/wall-loop-v0.1.0).
+Extract the entire ZIP and run `snapmaker-orca.exe`. This is an unsigned community
+build based on Snapmaker Orca 2.4.1. See the
+[Windows build and release instructions](doc/WindowsWallLoopBuild.md).
 
 Based on [Snapmaker/OrcaSlicer](https://github.com/Snapmaker/OrcaSlicer) at commit
 `c0e69878c643e8f6de128da4aa40f8da84327ae7`. The upstream source history,
