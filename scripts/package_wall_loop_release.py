@@ -19,7 +19,9 @@ def digest(path):
 
 def notice_files(directory):
     for folder, dirs, files in os.walk(directory):
-        dirs[:] = [d for d in dirs if d not in {".git", "node_modules", "CMakeFiles", "__pycache__"}]
+        dirs[:] = [d for d in dirs
+                   if d not in {".git", "node_modules", "CMakeFiles", "__pycache__", "build", "bin.v2", "DL_CACHE"}
+                   and not (Path(folder) / d).is_junction()]
         for name in files:
             upper = name.upper()
             if (upper.startswith(("LICENSE", "LICENCE", "COPYING", "NOTICE", "COPYRIGHT", "GPL", "LGPL"))
@@ -67,6 +69,7 @@ def main():
             roots += sorted((base / "build").glob("dep_*-prefix/src/dep_*"))
         for source in roots:
             if source.is_dir():
+                print(f"Collecting notices: {source.relative_to(ROOT)}", flush=True)
                 for path in notice_files(source):
                     files["third-party-notices/" + path.relative_to(ROOT).as_posix()] = path
     if args.extra_notices:
@@ -103,6 +106,7 @@ See PerWallLoopColorIndex.md for behavior and WindowsWallLoopBuild.md for builds
     manifest.update({name: hashlib.sha256(value.encode()).hexdigest() for name, value in generated.items()})
     generated["FILE-SHA256SUMS.txt"] = "".join(f"{value}  {name}\n" for name, value in sorted(manifest.items()))
     with zipfile.ZipFile(archive, "x", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as bundle:
+        print(f"Writing {len(files)} files to {archive.name}", flush=True)
         for name, path in sorted(files.items()):
             bundle.write(path, "Per-Wall-Loop-Color-Index/" + name)
         for name, value in generated.items():
